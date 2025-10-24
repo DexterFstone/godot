@@ -3207,6 +3207,424 @@ static void _list_call_arguments(GDScriptParser::CompletionContext &p_context, c
 				base_type.kind = GDScriptParser::DataType::UNRESOLVED;
 			} break;
 			case GDScriptParser::DataType::BUILTIN: {
+				if (base_type.builtin_type == Variant::SIGNAL && method == SNAME("connect") && p_argidx == 0) {
+					bool found = false;
+					StringName signal_name;
+					MethodInfo signal_info;
+					String object_name;
+					String object_type;
+					List<MethodInfo> script_methods;
+					StringName method_name;
+
+					if (p_context.current_class) {
+						const GDScriptParser::ClassNode *current_class = p_context.current_class;
+						while (current_class) {
+							for (const GDScriptParser::ClassNode::Member &member : current_class->members) {
+								if (member.type == GDScriptParser::ClassNode::Member::FUNCTION) {
+									MethodInfo method_info;
+									method_info.name = member.function->identifier->name;
+									for (const GDScriptParser::ParameterNode *param : member.function->parameters) {
+										PropertyInfo arg_info;
+										arg_info.name = param->identifier->name;
+										arg_info.type = param->get_datatype().builtin_type;
+										method_info.arguments.push_back(arg_info);
+									}
+									script_methods.push_back(method_info);
+								}
+							}
+							current_class = current_class->base_type.class_type;
+						}
+					}
+
+					const GDScriptParser::SubscriptNode *subscript = static_cast<const GDScriptParser::SubscriptNode *>(p_call->callee);
+					// signal.connect()
+					if (subscript->base && subscript->base->type == GDScriptParser::Node::IDENTIFIER) {
+						const GDScriptParser::IdentifierNode *base_id = static_cast<const GDScriptParser::IdentifierNode *>(subscript->base);
+						StringName signal_to_find;
+						if (base_id->name == SNAME("self") && subscript->is_attribute && subscript->attribute) {
+							signal_to_find = subscript->attribute->name;
+						} else {
+							signal_to_find = base_id->name;
+						}
+						const GDScriptParser::ClassNode *current_class = p_context.current_class;
+						while (current_class && !found) {
+							if (current_class->has_member(signal_to_find)) {
+								const GDScriptParser::ClassNode::Member &member = current_class->get_member(signal_to_find);
+								if (member.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+									signal_name = signal_to_find;
+									signal_info.name = signal_name;
+
+									for (const GDScriptParser::ParameterNode *param : member.signal->parameters) {
+										PropertyInfo arg;
+										arg.name = param->identifier->name;
+										arg.type = param->get_datatype().builtin_type;
+										signal_info.arguments.push_back(arg);
+									}
+									found = true;
+								}
+							}
+							current_class = current_class->base_type.class_type;
+						}
+						if (!found && p_context.current_class) {
+							StringName native_class = p_context.current_class->base_type.native_type;
+							while (!native_class.is_empty() && !found) {
+								if (ClassDB::has_signal(native_class, signal_to_find)) {
+									signal_name = signal_to_find;
+									List<MethodInfo> signals;
+									ClassDB::get_signal_list(native_class, &signals);
+									for (const MethodInfo &sig : signals) {
+										if (sig.name == signal_to_find) {
+											signal_info = sig;
+											found = true;
+											break;
+										}
+									}
+								}
+								if (!found) {
+									native_class = ClassDB::get_parent_class(native_class);
+								}
+							}
+						}
+					}
+					// node.signal.connect()
+					if (subscript->base && subscript->base->type == GDScriptParser::Node::SUBSCRIPT) {
+						const GDScriptParser::SubscriptNode *signal_subscript = static_cast<const GDScriptParser::SubscriptNode *>(subscript->base);
+						if (signal_subscript->is_attribute && signal_subscript->attribute && signal_subscript->base) {
+							if (signal_subscript->base->type == GDScriptParser::Node::IDENTIFIER) {
+								const GDScriptParser::IdentifierNode *node_id = static_cast<const GDScriptParser::IdentifierNode *>(signal_subscript->base);
+								object_name = node_id->name;
+							}
+							signal_name = signal_subscript->attribute->name;
+							GDScriptCompletionIdentifier node_identifier;
+							if (_guess_expression_type(p_context, signal_subscript->base, node_identifier)) {
+								signal_info.name = signal_name;
+								if (node_identifier.type.kind == GDScriptParser::DataType::NATIVE) {
+									StringName native_class = node_identifier.type.native_type;
+									while (!native_class.is_empty() && !found) {
+										if (ClassDB::has_signal(native_class, signal_name)) {
+											List<MethodInfo> signals;
+											ClassDB::get_signal_list(native_class, &signals);
+											for (const MethodInfo &sig : signals) {
+												if (sig.name == signal_name) {
+													signal_info = sig;
+													found = true;
+													break;
+												}
+											}
+										}
+										if (!found) {
+											native_class = ClassDB::get_parent_class(native_class);
+										}
+									}
+								}
+								if (!found && node_identifier.type.kind == GDScriptParser::DataType::SCRIPT) {
+									Ref<Script> scr = node_identifier.type.script_type;
+									if (scr.is_valid()) {
+										List<MethodInfo> signals;
+										scr->get_script_signal_list(&signals);
+										for (const MethodInfo &sig : signals) {
+											if (sig.name == signal_name) {
+												signal_info = sig;
+												found = true;
+												break;
+											}
+										}
+									}
+								}
+								if (!found && node_identifier.type.kind == GDScriptParser::DataType::CLASS) {
+									const GDScriptParser::ClassNode *node_class = node_identifier.type.class_type;
+									while (node_class && !found) {
+										if (node_class->has_member(signal_name)) {
+											const GDScriptParser::ClassNode::Member &member = node_class->get_member(signal_name);
+											if (member.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+												signal_info.name = signal_name;
+												for (const GDScriptParser::ParameterNode *param : member.signal->parameters) {
+													PropertyInfo arg_info;
+													arg_info.name = param->identifier->name;
+													arg_info.type = param->get_datatype().builtin_type;
+													signal_info.arguments.push_back(arg_info);
+												}
+												found = true;
+											}
+										}
+										node_class = node_class->base_type.class_type;
+									}
+								}
+							}
+						}
+						// method.signal.connect()
+						if (subscript->base && subscript->base->type == GDScriptParser::Node::SUBSCRIPT) {
+							const GDScriptParser::SubscriptNode *signal_subscript = static_cast<const GDScriptParser::SubscriptNode *>(subscript->base);
+							if (signal_subscript->is_attribute && signal_subscript->attribute && signal_subscript->base) {
+								GDScriptCompletionIdentifier node_identifier;
+								if (_guess_expression_type(p_context, signal_subscript->base, node_identifier)) {
+									if (node_identifier.type.kind == GDScriptParser::DataType::NATIVE) {
+										object_type = node_identifier.type.native_type;
+									} else if (node_identifier.type.kind == GDScriptParser::DataType::CLASS) {
+										if (node_identifier.type.class_type && node_identifier.type.class_type->identifier) {
+											object_type = node_identifier.type.class_type->identifier->name;
+										}
+									} else if (node_identifier.type.kind == GDScriptParser::DataType::SCRIPT) {
+										if (node_identifier.type.script_type.is_valid()) {
+											object_type = node_identifier.type.script_type->get_instance_base_type();
+										}
+									}
+									signal_name = signal_subscript->attribute->name;
+									signal_info.name = signal_name;
+									if (node_identifier.type.kind == GDScriptParser::DataType::NATIVE) {
+										StringName native_class = node_identifier.type.native_type;
+										while (!native_class.is_empty() && !found) {
+											if (ClassDB::has_signal(native_class, signal_name)) {
+												List<MethodInfo> signals;
+												ClassDB::get_signal_list(native_class, &signals);
+												for (const MethodInfo &sig : signals) {
+													if (sig.name == signal_name) {
+														signal_info = sig;
+														found = true;
+														break;
+													}
+												}
+											}
+											if (!found) {
+												native_class = ClassDB::get_parent_class(native_class);
+											}
+										}
+									}
+									if (!found && node_identifier.type.kind == GDScriptParser::DataType::SCRIPT) {
+										Ref<Script> scr = node_identifier.type.script_type;
+										if (scr.is_valid()) {
+											List<MethodInfo> signals;
+											scr->get_script_signal_list(&signals);
+											for (const MethodInfo &sig : signals) {
+												if (sig.name == signal_name) {
+													signal_info = sig;
+													found = true;
+													break;
+												}
+											}
+										}
+									}
+									if (!found && node_identifier.type.kind == GDScriptParser::DataType::CLASS) {
+										const GDScriptParser::ClassNode *node_class = node_identifier.type.class_type;
+										while (node_class && !found) {
+											if (node_class->has_member(signal_name)) {
+												const GDScriptParser::ClassNode::Member &member = node_class->get_member(signal_name);
+												if (member.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+													signal_info.name = signal_name;
+													for (const GDScriptParser::ParameterNode *param : member.signal->parameters) {
+														PropertyInfo arg_info;
+														arg_info.name = param->identifier->name;
+														arg_info.type = param->get_datatype().builtin_type;
+														signal_info.arguments.push_back(arg_info);
+													}
+													found = true;
+												}
+											}
+											node_class = node_class->base_type.class_type;
+										}
+									}
+								}
+							}
+						}
+						// Engine.singleton.signal.connect()
+						if (subscript->base && subscript->base->type == GDScriptParser::Node::SUBSCRIPT) {
+							const GDScriptParser::SubscriptNode *signal_subscript = static_cast<const GDScriptParser::SubscriptNode *>(subscript->base);
+							if (signal_subscript->is_attribute && signal_subscript->attribute && signal_subscript->base) {
+								if (signal_subscript->base->type == GDScriptParser::Node::IDENTIFIER) {
+									const GDScriptParser::IdentifierNode *node_id = static_cast<const GDScriptParser::IdentifierNode *>(signal_subscript->base);
+									if (Engine::get_singleton()->has_singleton(node_id->name)) {
+										object_name = node_id->name;
+										signal_name = signal_subscript->attribute->name;
+										signal_info.name = signal_name;
+										StringName native_class = node_id->name;
+										while (!native_class.is_empty() && !found) {
+											if (ClassDB::has_signal(native_class, signal_name)) {
+												List<MethodInfo> signals;
+												ClassDB::get_signal_list(native_class, &signals);
+												for (const MethodInfo &sig : signals) {
+													if (sig.name == signal_name) {
+														signal_info = sig;
+														found = true;
+														break;
+													}
+												}
+											}
+											if (!found) {
+												native_class = ClassDB::get_parent_class(native_class);
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+					if (found && !signal_name.is_empty()) {
+						if (p_call->arguments.size() > 0 && p_call->arguments[0]) {
+							const GDScriptParser::ExpressionNode *arg = p_call->arguments[0];
+							if (arg->type == GDScriptParser::Node::IDENTIFIER) {
+								const GDScriptParser::IdentifierNode *method_id = static_cast<const GDScriptParser::IdentifierNode *>(arg);
+								method_name = method_id->name;
+							}
+						}
+
+						// lambda
+						if (method_name.is_empty()) {
+							ScriptLanguage::CodeCompletionOption option;
+							option.kind = ScriptLanguage::CODE_COMPLETION_KIND_PLAIN_TEXT;
+							option.insert_text = "func (";
+							for (int i = 0; i < signal_info.arguments.size(); i++) {
+								const PropertyInfo &arg = signal_info.arguments[i];
+								String type_name;
+								if (arg.type == Variant::NIL && (arg.usage & PROPERTY_USAGE_NIL_IS_VARIANT)) {
+									type_name = "Variant";
+								} else if (arg.type == Variant::OBJECT && arg.class_name != StringName()) {
+									type_name = arg.class_name;
+								} else if (arg.type == Variant::INT && (arg.usage & PROPERTY_USAGE_CLASS_IS_ENUM)) {
+									type_name = String(arg.class_name).replace("::", ".");
+								} else {
+									type_name = Variant::get_type_name(arg.type);
+								}
+								option.insert_text += arg.name + ": " + type_name;
+								if (i < signal_info.arguments.size() - 1) {
+									option.insert_text += ", ";
+								}
+							}
+							option.insert_text += "): pass";
+							option.display = option.insert_text;
+							option.location = ScriptLanguage::LOCATION_LOCAL;
+							r_result.insert(option.display, option);
+
+							if (!object_name.is_empty()) { // node.signal.connect()
+								String suggested_method_name = "_on_" + object_name.to_snake_case() + "_" + ((String)signal_name).to_snake_case();
+								ScriptLanguage::CodeCompletionOption option;
+								option.kind = ScriptLanguage::CODE_COMPLETION_KIND_FUNCTION;
+								option.display = suggested_method_name;
+								option.insert_text = suggested_method_name;
+								option.location = ScriptLanguage::LOCATION_LOCAL;
+								Dictionary method_data;
+								PackedStringArray arguments;
+								for (const PropertyInfo &arg : signal_info.arguments) {
+									String arg_data = arg.name + ": " + Variant::get_type_name(arg.type);
+									arguments.push_back(arg_data);
+								}
+								String current_script = p_context.parser->get_script_path();
+								method_data["script"] = current_script;
+								method_data["method_name"] = suggested_method_name;
+								method_data["arguments"] = arguments;
+								method_data["create_method"] = true;
+								option.default_value = method_data;
+								r_result.insert(option.display, option);
+
+							} else if (!object_type.is_empty()) { // method.signal.connect()
+								String suggested_method_name = "_on_" + object_type.to_snake_case() + "_" + ((String)signal_name).to_snake_case();
+								ScriptLanguage::CodeCompletionOption option;
+								option.kind = ScriptLanguage::CODE_COMPLETION_KIND_FUNCTION;
+								option.display = suggested_method_name;
+								option.insert_text = suggested_method_name;
+								option.location = ScriptLanguage::LOCATION_LOCAL;
+								Dictionary method_data;
+								PackedStringArray arguments;
+								for (const PropertyInfo &arg : signal_info.arguments) {
+									String arg_data = arg.name + ": " + Variant::get_type_name(arg.type);
+									arguments.push_back(arg_data);
+								}
+								String current_script = p_context.parser->get_script_path();
+								method_data["script"] = current_script;
+								method_data["method_name"] = suggested_method_name;
+								method_data["arguments"] = arguments;
+								method_data["create_method"] = true;
+								option.default_value = method_data;
+								r_result.insert(option.display, option);
+
+							} else { // self./signal.connect()
+								String suggested_method_name = "_on_" + ((String)signal_name).to_snake_case();
+								ScriptLanguage::CodeCompletionOption option;
+								option.kind = ScriptLanguage::CODE_COMPLETION_KIND_FUNCTION;
+								option.display = suggested_method_name;
+								option.insert_text = suggested_method_name;
+								option.location = ScriptLanguage::LOCATION_LOCAL;
+								Dictionary method_data;
+								PackedStringArray arguments;
+								for (const PropertyInfo &arg : signal_info.arguments) {
+									String arg_data = arg.name + ": " + Variant::get_type_name(arg.type);
+									arguments.push_back(arg_data);
+								}
+								String current_script = p_context.parser->get_script_path();
+								method_data["script"] = current_script;
+								method_data["method_name"] = suggested_method_name;
+								method_data["arguments"] = arguments;
+								method_data["create_method"] = true;
+								option.default_value = method_data;
+								r_result.insert(option.display, option);
+							}
+
+							for (const MethodInfo &method : script_methods) {
+								int min_args = method.arguments.size() - method.default_arguments.size();
+								int max_args = method.arguments.size();
+								if (signal_info.arguments.size() >= min_args && signal_info.arguments.size() <= max_args) {
+									bool signature_matches = true;
+									for (int i = 0; i < signal_info.arguments.size(); i++) {
+										if (i >= method.arguments.size()) {
+											break;
+										}
+										Variant::Type signal_arg_type = signal_info.arguments[i].type;
+										Variant::Type method_arg_type = method.arguments[i].type;
+										if (signal_arg_type != Variant::NIL && method_arg_type != Variant::NIL && signal_arg_type != method_arg_type) {
+											signature_matches = false;
+											break;
+										}
+									}
+									if (signature_matches) {
+										ScriptLanguage::CodeCompletionOption option;
+										option.kind = ScriptLanguage::CODE_COMPLETION_KIND_FUNCTION;
+										option.display = method.name;
+										option.insert_text = method.name;
+										option.location = ScriptLanguage::LOCATION_LOCAL;
+										r_result.insert(option.display, option);
+									}
+								}
+							}
+						} else {
+							String suggested_method_name = method_name;
+							ScriptLanguage::CodeCompletionOption option;
+							option.kind = ScriptLanguage::CODE_COMPLETION_KIND_PLAIN_TEXT;
+							option.display = vformat("func %s(", suggested_method_name);
+							for (int i = 0; i < signal_info.arguments.size(); i++) {
+								const PropertyInfo &arg = signal_info.arguments[i];
+								String type_name;
+								if (arg.type == Variant::NIL && (arg.usage & PROPERTY_USAGE_NIL_IS_VARIANT)) {
+									type_name = "Variant";
+								} else if (arg.type == Variant::OBJECT && arg.class_name != StringName()) {
+									type_name = arg.class_name;
+								} else if (arg.type == Variant::INT && (arg.usage & PROPERTY_USAGE_CLASS_IS_ENUM)) {
+									type_name = String(arg.class_name).replace("::", ".");
+								} else {
+									type_name = Variant::get_type_name(arg.type);
+								}
+								option.insert_text += arg.name + ": " + type_name;
+								if (i < signal_info.arguments.size() - 1) {
+									option.insert_text += ", ";
+								}
+							}
+							option.display += "): pass";
+							option.insert_text = suggested_method_name;
+							Dictionary method_data;
+							PackedStringArray arguments;
+							for (const PropertyInfo &arg : signal_info.arguments) {
+								String arg_data = arg.name + ": " + Variant::get_type_name(arg.type);
+								arguments.push_back(arg_data);
+							}
+							String current_script = p_context.parser->get_script_path();
+							method_data["script"] = current_script;
+							method_data["method_name"] = suggested_method_name;
+							method_data["arguments"] = arguments;
+							method_data["create_method"] = true;
+							option.default_value = method_data;
+							r_result.insert(option.display, option);
+						}
+					}
+				}
+
 				if (base.get_type() == Variant::NIL) {
 					Callable::CallError err;
 					Variant::construct(base_type.builtin_type, base, nullptr, 0, err);
@@ -3383,6 +3801,35 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 				if (_guess_expression_type(p_context, subscript->base, ci)) {
 					base_type = ci.type;
 					base = ci.value;
+					if (subscript->base->type == GDScriptParser::Node::IDENTIFIER) {
+						const GDScriptParser::IdentifierNode *base_id = static_cast<const GDScriptParser::IdentifierNode *>(subscript->base);
+						const GDScriptParser::ClassNode *current_class = p_context.current_class;
+						bool is_signal = false;
+						while (current_class && !is_signal) {
+							if (current_class->has_member(base_id->name)) {
+								const GDScriptParser::ClassNode::Member &member = current_class->get_member(base_id->name);
+								if (member.type == GDScriptParser::ClassNode::Member::SIGNAL) {
+									is_signal = true;
+									break;
+								}
+							}
+							current_class = current_class->base_type.class_type;
+						}
+						if (!is_signal && p_context.current_class) {
+							StringName native_class = p_context.current_class->base_type.native_type;
+							while (!native_class.is_empty() && !is_signal) {
+								if (ClassDB::has_signal(native_class, base_id->name)) {
+									is_signal = true;
+									break;
+								}
+								native_class = ClassDB::get_parent_class(native_class);
+							}
+						}
+						if (is_signal) {
+							base_type.kind = GDScriptParser::DataType::BUILTIN;
+							base_type.builtin_type = Variant::SIGNAL;
+						}
+					}
 				} else {
 					return;
 				}
@@ -3577,6 +4024,14 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 			is_function = true;
 			[[fallthrough]];
 		case GDScriptParser::COMPLETION_IDENTIFIER: {
+			if (completion_context.call.call != nullptr && completion_context.call.call->type == GDScriptParser::Node::CALL) {
+				const GDScriptParser::CallNode *call = static_cast<const GDScriptParser::CallNode *>(completion_context.call.call);
+				if (call->function_name == SNAME("connect") && completion_context.call.argument == 0) {
+					_find_call_arguments(completion_context, completion_context.call.call, completion_context.call.argument, options, r_forced, r_call_hint);
+					break;
+				}
+			}
+
 			_find_identifiers(completion_context, is_function, !_guess_expecting_callable(completion_context), options, 0);
 		} break;
 		case GDScriptParser::COMPLETION_ATTRIBUTE_METHOD:

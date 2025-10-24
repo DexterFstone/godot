@@ -2440,6 +2440,18 @@ void CodeEdit::confirm_code_completion(bool p_replace) {
 	if (code_completion_prefixes.has(caret_last_completion_char)) {
 		request_code_completion();
 	}
+
+	if (code_completion_current_selected >= 0 && code_completion_current_selected < code_completion_options.size()) {
+		Dictionary option;
+		option["kind"] = code_completion_options[code_completion_current_selected].kind;
+		option["display_text"] = code_completion_options[code_completion_current_selected].display;
+		option["insert_text"] = code_completion_options[code_completion_current_selected].insert_text;
+		option["font_color"] = code_completion_options[code_completion_current_selected].font_color;
+		option["icon"] = code_completion_options[code_completion_current_selected].icon;
+		option["location"] = code_completion_options[code_completion_current_selected].location;
+		option["default_value"] = code_completion_options[code_completion_current_selected].default_value;
+		emit_signal(SNAME("confirm_code_completion"), option);
+	}
 }
 
 void CodeEdit::cancel_code_completion() {
@@ -2972,6 +2984,7 @@ void CodeEdit::_bind_methods() {
 
 	/* Code Completion */
 	ADD_SIGNAL(MethodInfo("code_completion_requested"));
+	ADD_SIGNAL(MethodInfo("confirm_code_completion", PropertyInfo(Variant::DICTIONARY, "option")));
 
 	/* Symbol lookup */
 	ADD_SIGNAL(MethodInfo("symbol_lookup", PropertyInfo(Variant::STRING, "symbol"), PropertyInfo(Variant::INT, "line"), PropertyInfo(Variant::INT, "column")));
@@ -3765,8 +3778,11 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 
 	/* A perfect match, stop completion. */
 	if (code_completion_options_new.size() == 1 && string_to_complete == code_completion_options_new[0].display) {
-		cancel_code_completion();
-		return;
+		Dictionary default_value = code_completion_options_new[0].default_value;
+		if (!default_value.has("create_method")) {
+			cancel_code_completion();
+			return;
+		}
 	}
 
 	code_completion_options_new.sort_custom<CodeCompletionOptionCompare>();

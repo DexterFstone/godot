@@ -2740,6 +2740,49 @@ void ScriptTextEditor::_text_edit_gui_input(const Ref<InputEvent> &ev) {
 	}
 }
 
+void ScriptTextEditor::_code_completion_confirmed(const Dictionary p_option) {
+	Dictionary option = p_option;
+	if (!option.has("default_value")) {
+		return;
+	}
+	Variant default_value = option["default_value"];
+	if (default_value.get_type() != Variant::DICTIONARY) {
+		return;
+	}
+	Dictionary method_data = default_value;
+	if (!method_data.has("create_method") || !method_data["create_method"] || !method_data["script"]) {
+		return;  
+	}
+	String method_name = method_data["method_name"];
+	PackedStringArray args = method_data["arguments"];
+	Ref<Resource> resource = ResourceLoader::load(method_data["script"]);
+	Ref<Script> current_script = resource;
+	ScriptLanguage *language = current_script->get_language();
+	if (!language->can_make_function()) {
+		return;
+	}
+	code_editor->get_text_editor()->begin_complex_operation();
+	code_editor->get_text_editor()->remove_secondary_carets();
+	code_editor->get_text_editor()->deselect();
+	String code = code_editor->get_text_editor()->get_text();
+	int pos = language->find_function(method_name, code);
+	if (pos == -1) {
+		// Function does not exist, create it at the end of the file.
+		int last_line = code_editor->get_text_editor()->get_line_count() - 1;
+		String func = language->make_function("", method_name, args);
+		code_editor->get_text_editor()->insert_text("\n\n" + func, last_line, code_editor->get_text_editor()->get_line(last_line).length());
+		pos = last_line + 3;
+	}
+	// Put caret on the line after the function, after the indent.
+	int indent_column = 1;
+	if (EDITOR_GET("text_editor/behavior/indent/type")) {
+		indent_column = EDITOR_GET("text_editor/behavior/indent/size");
+	}
+	code_editor->get_text_editor()->set_caret_line(pos, true, true, -1);
+	code_editor->get_text_editor()->set_caret_column(indent_column);
+	code_editor->get_text_editor()->end_complex_operation();
+}
+
 void ScriptTextEditor::_color_changed(const Color &p_color) {
 	String new_args;
 	const int decimals = 3;
@@ -2842,6 +2885,7 @@ void ScriptTextEditor::_enable_code_editor() {
 	code_editor->get_text_editor()->connect("gutter_clicked", callable_mp(this, &ScriptTextEditor::_gutter_clicked));
 	code_editor->get_text_editor()->connect("_fold_line_updated", callable_mp(this, &ScriptTextEditor::_update_background_color));
 	code_editor->get_text_editor()->connect(SceneStringName(gui_input), callable_mp(this, &ScriptTextEditor::_text_edit_gui_input));
+	code_editor->get_text_editor()->connect("confirm_code_completion", callable_mp(this, &ScriptTextEditor::_code_completion_confirmed));
 	code_editor->show_toggle_files_button();
 	_update_gutter_indexes();
 
